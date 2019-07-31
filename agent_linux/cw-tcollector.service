@@ -1,0 +1,11 @@
+[Unit]
+Description=CloudWatch TCollector
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=PYTHON AGENT
+
+[Install]
+WantedBy=multi-user.target
+
