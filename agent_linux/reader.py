@@ -14,10 +14,12 @@
 import json
 import threading
 import time
+import traceback
 from Queue import Queue, Full
 
 import agent_globals
 import logger
+from error_report import ErrorReport
 
 LOG = logger.get_logger('reader')
 MAX_REASONABLE_TIMESTAMP = 1600000000
@@ -56,6 +58,7 @@ class ReaderThread(threading.Thread):
         self.dedupinterval = options.dedupinterval
         self.evictinterval = options.evictinterval
         self.deduponlyzero = options.deduponlyzero
+        self.err_report = ErrorReport()
 
     def run(self):
         """Main loop for this thread.  Just reads from collectors,
@@ -89,7 +92,8 @@ class ReaderThread(threading.Thread):
                 # and here is the loop that we really should get rid of, this
                 # just prevents us from spinning right now
                 time.sleep(1)
-            except Exception:
+            except Exception as e:
+                self.err_report.record_reader_err(traceback.format_exc())
                 LOG.error('reading error', exc_info=True)
 
     def process_line(self, col, line):
@@ -116,89 +120,28 @@ class ReaderThread(threading.Thread):
             col.lines_invalid += 1
             return
 
-        # parsed = re.match('^([-_./a-zA-Z0-9]+)\s+'  # Metric name.
-        #                   '(\d+\.?\d+)\s+'  # Timestamp.
-        #                   '(\S+?)\s+'  # Value (int or float).
-        #                   '(\[(?:\s?[-_./a-zA-Z0-9]+=[-_.:\\\\/a-zA-Z0-9]+)*\])$',  # Tags
-        #                   line)
-        # if parsed is None:
-        #     LOG.warning('%s sent invalid data: %s', col.name, line)
-        #     col.lines_invalid += 1
-        #     return
-        # metric, timestamp, value, tags = parsed.groups()
-        # timestamp = int(timestamp)
-        #
-        # # If there are more than 11 digits we're dealing with a timestamp
-        # # with millisecond precision
-        # if len(str(timestamp)) > 11:
-        #     global MAX_REASONABLE_TIMESTAMP
-        #     MAX_REASONABLE_TIMESTAMP = MAX_REASONABLE_TIMESTAMP * 1000
-
-        # De-dupe detection...  To reduce the number of points we send to the
-        # TSD, we suppress sending values of metrics that don't change to
-        # only once every 10 minutes (which is also when TSD changes rows
-        # and how much extra time the scanner adds to the beginning/end of a
-        # graph interval in order to correctly calculate aggregated values).
-        # When the values do change, we want to first send the previous value
-        # with what the timestamp was when it first became that value (to keep
-        # slopes of graphs correct).
+        if 'env_test' in data_json:
+            LOG.info('environment test report: %s', line)
+            col.lines_invalid += 1
+            return
 
         if self.dedupinterval != 0:  # if 0 we do not use dedup
             if self.dedup(col, data_json):
                 return
-            # key = (metric, tags)
-            # if key in col.values:
-            #     # if the timestamp isn't > than the previous one, ignore this value
-            #     if timestamp <= col.values[key][3]:
-            #         LOG.error("Timestamp out of order: metric=%s%s,"
-            #                   " old_ts=%d >= new_ts=%d - ignoring data point"
-            #                   " (value=%r, collector=%s)", metric, tags,
-            #                   col.values[key][3], timestamp, value, col.name)
-            #         col.lines_invalid += 1
-            #         return
-            #     elif timestamp >= MAX_REASONABLE_TIMESTAMP:
-            #         LOG.error("Timestamp is too far out in the future: metric=%s%s"
-            #                   " old_ts=%d, new_ts=%d - ignoring data point"
-            #                   " (value=%r, collector=%s)", metric, tags,
-            #                   col.values[key][3], timestamp, value, col.name)
-            #         return
-            #
-            #     # if this data point is repeated, store it but don't send.
-            #     # store the previous timestamp, so when/if this value changes
-            #     # we send the timestamp when this metric first became the current
-            #     # value instead of the last.  Fall through if we reach
-            #     # the dedup interval so we can print the value.
-            #     if ((not self.deduponlyzero or (self.deduponlyzero and float(value) == 0.0)) and
-            #             col.values[key][0] == value and
-            #             (timestamp - col.values[key][3] < self.dedupinterval)):
-            #         col.values[key] = (value, True, line, col.values[key][3])
-            #         return
-            #
-            #     # we might have to append two lines if the value has been the same
-            #     # for a while and we've skipped one or more values.  we need to
-            #     # replay the last value we skipped (if changed) so the jumps in
-            #     # our graph are accurate,
-            #     if ((col.values[key][1] or
-            #          (timestamp - col.values[key][3] >= self.dedupinterval))
-            #             and col.values[key][0] != value):
-            #         col.lines_sent += 1
-            #         if not self.readerq.nput(
-            #                 MetricLine(col.values[key][2], col.name[0:col.name.index('.')], col.version, col.config_version, wai.get_host_id())):
-            #             self.lines_dropped += 1
-            #
-            # # now we can reset for the next pass and send the line we actually
-            # # want to send
-            # # col.values is a dict of tuples, with the key being the metric and
-            # # tags (essentially the same as wthat TSD uses for the row key).
-            # # The array consists of:
-            # # [ the metric's value, if this value was repeated, the line of data,
-            # #   the value's timestamp that it last changed ]
-            # col.values[key] = (value, False, line, timestamp)
 
-        col.lines_sent += 1
-        # print('read line: %s' % line)
-        if not self.readerq.nput(MetricLine(data_json, col.name[0:col.name.index('.')], col.version, col.config_version)):
-            self.lines_dropped += 1
+        script_type = col.name[0:col.name.index('.')]
+        if script_type == 'custom':
+            for data_item in data_json:
+                data = data_item['data']
+                source_key = data_item['source_key']
+                col.lines_sent += 1
+                if not self.readerq.nput(MetricLine(data, '', col.version, col.config_version, source_key)):
+                    self.lines_dropped += 1
+        else:
+            col.lines_sent += 1
+            # print('read line: %s' % line)
+            if not self.readerq.nput(MetricLine(data_json, script_type, col.version, col.config_version)):
+                self.lines_dropped += 1
 
     def dedup(self, collector, data_json):
         return False
@@ -220,8 +163,9 @@ class ReaderQueue(Queue):
 
 class MetricLine:
 
-    def __init__(self, data, script_type, script_version, config_version):
+    def __init__(self, data, script_type, script_version, config_version, source_key=None):
         self.data = data
         self.script_type = script_type
         self.script_version = script_version
         self.config_version = config_version
+        self.source_key = source_key

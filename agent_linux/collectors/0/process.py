@@ -1,10 +1,14 @@
 import commands
 import json
 import os
+import resource
 import sys
 import time
 
-from diskcache import Cache
+sys.path.append(sys.argv[1])
+
+from collectors.libs import time_util
+from collectors.libs.cache import CacheProxy
 
 
 def main(argv):
@@ -13,98 +17,117 @@ def main(argv):
     total_mem = get_total_mem()
     # print total_mem
 
-    collectors_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-    cache = Cache(os.path.join(collectors_dir, 'cache/script/process'))
+    cache = CacheProxy('process')
 
-    cpu_total_jiffies = counter_calc_delta(cache, 'cpu_total_jiffies', get_cpu_total_jiffies())
+    cpu_total_jiffies = cache.counter_to_gauge('cpu_total_jiffies', get_cpu_total_jiffies())
 
     pids = get_pids()
 
     out_list = []
 
     mem_usert_total = 0.0
+    count = 0
+
+    top10 = []
+
+    ntp_checked, timestamp = time_util.get_ntp_time()
+
+    page_size = resource.getpagesize()
 
     for pid in pids:
-        try:
-            f_stat = open('/proc/%d/stat' % pid)
-        except IOError:
+
+        stat_path = '/proc/%d/stat' % pid
+
+        if not os.path.isfile(stat_path):
             continue
 
-        line = f_stat.readline()
+        try:
+            with open(stat_path, 'r') as f_stat:
 
-        values = line.split(None)
-        name = values[1][1: len(values[1]) - 1]
-        status = values[2]
-        ppid = values[3]
+                line = f_stat.readline()
+                values = line.split(None)
+                if len(values) < 24:
+                    continue
 
-        dimensions = {'proc_id': pid,
-                      'parent_pid': ppid,
-                      'proc_nm': name,
-                      'proc_stat_cd': status}
-        metrics = {}
+                name = values[1][1: len(values[1]) - 1]
+                status = values[2]
+                ppid = values[3]
 
-        used_cpu_jiff = counter_calc_delta(cache, 'used_cpu_jiff_%d' % pid, long(values[13] + values[14]))
+                dimensions = {'proc_id': pid,
+                              'parent_pid': ppid,
+                              'proc_nm': name,
+                              'proc_stat_cd': status}
+                metrics = {}
 
-        if used_cpu_jiff is None or cpu_total_jiffies is None:
-            cpu_usert = None
-            t_cpu_usert = None
-        else:
-            cpu_usert = used_cpu_jiff * 100.0 / cpu_total_jiffies
-            t_cpu_usert = cpu_usert
+                used_cpu_jiff = cache.counter_to_gauge('used_cpu_jiff_%d' % pid, long(values[13]) + long(values[14]))
 
-        mem = long(values[23])
-        if total_mem is None:
-            mem_usert = 0.0
-        else:
-            mem_usert = mem * 100.0 / total_mem / 1024
+                if used_cpu_jiff is None or cpu_total_jiffies is None:
+                    cpu_usert = None
+                    t_cpu_usert = None
+                else:
+                    cpu_usert = used_cpu_jiff * 100.0 / cpu_total_jiffies
+                    t_cpu_usert = cpu_usert
 
-        vir_mem = float(values[22]) / 1024.0
+                mem = long(values[23]) * page_size
+                if total_mem is None:
+                    mem_usert = 0.0
+                else:
+                    mem_usert = mem * 100.0 / total_mem / 1024
 
-        cpu_time = float(values[13] + values[14]) / HZ
+                vir_mem = float(values[22]) / 1024.0
 
-        priority = int(values[17])
+                cpu_time = (float(values[13]) + float(values[14])) / HZ
 
-        nice = int(values[18])
+                priority = int(values[17])
 
-        thread_num = int(values[19])
+                nice = int(values[18])
 
-        cpu_core_cnt = get_cpu_core_count()
+                thread_num = int(values[19])
 
-        timestamp = time.time()
-        start_time = timestamp - get_uptime() + float(values[21]) / HZ
-        start_time_local = time.localtime(start_time)
-        start_time_str = time.strftime("%Y-%m-%d %H:%M:%S", start_time_local)
+                cpu_core_cnt = get_cpu_core_count()
 
-        dimensions['strt_ymdt'] = start_time_str
-        dimensions['proc_cpu_cnt'] = cpu_core_cnt
+                time_now = time.time()
+                start_time = time_now - get_uptime() + float(values[21]) / HZ
+                # start_time_local = time.localtime(start_time)
+                # start_time_str = time.strftime("%Y-%m-%d %H:%M:%S", start_time_local)
 
-        if cpu_usert is not None:
-            metrics['cpu_usert'] = cpu_usert
+                dimensions['strt_ymdt'] = long(start_time * 1000)
+                dimensions['proc_cpu_cnt'] = cpu_core_cnt
 
-        if t_cpu_usert is not None:
-            metrics['proc_t_cpu_usert'] = t_cpu_usert
+                if cpu_usert is not None:
+                    metrics['cpu_usert'] = cpu_usert
 
-        if mem_usert is not None:
-            metrics['mem_usert'] = mem_usert
-            mem_usert_total += mem_usert
+                if t_cpu_usert is not None:
+                    metrics['proc_t_cpu_usert'] = t_cpu_usert
 
-        metrics['vir_mem_byt_cnt'] = vir_mem
-        metrics['cpu_tm_ss'] = cpu_time
-        metrics['prit_rnk'] = priority
-        metrics['nice_val'] = nice
-        metrics['thd_cnt'] = thread_num
+                if mem_usert is not None:
+                    metrics['p_proc_mem_usert'] = mem_usert
+                    mem_usert_total += mem_usert
 
-        if metrics:
-            out = {'dimensions': dimensions,
-                   'metrics': metrics,
-                   'timestamp': int(time.time() * 1000)}
-            out_list.append(out)
+                metrics['vir_mem_byt_cnt'] = vir_mem
+                metrics['cpu_tm_ss'] = cpu_time
+                metrics['prit_rnk'] = priority
+                metrics['nice_val'] = nice
+                metrics['thd_cnt'] = thread_num
 
-        f_stat.close()
+                if metrics:
+                    out = {'dimensions': dimensions,
+                           'metrics': metrics,
+                           'timestamp': timestamp,
+                           'ntp_checked': ntp_checked}
+                    top10_check_insert(top10, out)
+                    # out_list.append(out)
+                    count += 1
+        except Exception:
+            pass
+
+    for item in top10:
+        out_list.append(item)
 
     out = {'dimensions': {'schema_type': 'svr'},
-           'metrics': {'proc_cnt': len(pids), 'proc_mem_usert': mem_usert_total, 'run_que_len': get_run_que_len()},
-           'timestamp': int(time.time() * 1000)
+           'metrics': {'proc_cnt': count, 'proc_mem_usert': mem_usert_total, 'run_que_len': get_run_que_len()},
+           'timestamp': timestamp,
+           'ntp_checked': ntp_checked
            }
     out_list.append(out)
 
@@ -112,6 +135,23 @@ def main(argv):
     sys.stdout.flush()
 
     cache.close()
+
+
+def top10_check_insert(arr, item):
+    if 'cpu_usert' not in item['metrics']:
+        return
+
+    limit = 10
+    for i in range(0, len(arr) - 1):
+        if item['metrics']['cpu_usert'] > arr[i]['metrics']['cpu_usert']:
+            arr.insert(i, item)
+            if len(arr) > limit:
+                arr.pop()
+            return
+    if len(arr) < limit:
+        arr.append(item)
+    elif len(arr) > limit:
+        arr.pop()
 
 
 def get_pids():
@@ -177,17 +217,6 @@ def get_cpu_core_count():
             count += 1
     f.close()
     return count
-
-
-def counter_calc_delta(cache, key, value):
-    last_value = cache.get(key)
-    cache.set(key, value)
-    if last_value is None:
-        return None
-    delta = value - last_value
-    if delta < 0 or delta > last_value:
-        return None
-    return delta
 
 
 if __name__ == "__main__":

@@ -13,12 +13,14 @@
 
 import os
 import subprocess
+import sys
 import time
 from ctypes import byref, windll, wintypes, WinError
 
 import msvcrt
 
 import logger
+import wai
 
 LOG = logger.get_logger('collector')
 
@@ -106,16 +108,21 @@ class Collector(object):
             while len(self.datalines):
                 yield self.datalines.pop(0)
 
-    def startup(self):
+    def startup(self, config_version=None):
         LOG.debug('starting up %s (interval=%d)', self.name, self.interval)
 
         try:
-            # self.process = subprocess.Popen(self.script, stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True,
-            #                                 preexec_fn=os.setsid)
-            # print("--- script:%s" % self.script)
-            py = os.path.join(self.options.basedir, 'venv', 'Scripts', 'python.exe')
-            print(py)
-            self.process = subprocess.Popen('%s %s' % (py, self.script), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            py = '%s\\venv\\Scripts\\python' % self.options.basedir
+            if config_version is not None:
+                host_id = wai.get_host_id(self.options)
+                self.process = subprocess.Popen([py, self.script, sys.path[0], str(config_version), host_id],
+                                                stdout=subprocess.PIPE,
+                                                stderr=subprocess.PIPE)
+            else:
+                self.process = subprocess.Popen([py, self.script, sys.path[0]],
+                                                stdout=subprocess.PIPE,
+                                                stderr=subprocess.PIPE)
+
             if self.process.pid <= 0:
                 LOG.error('failed to startup collector: %s', self.name, exc_info=True)
                 return

@@ -29,8 +29,9 @@ def get_host_id(options=None):
 
     now = time.time()
     if now - REFRESH_TIME > 10 * 60 or not HOST_ID:
-        headers = {'Content-Type': 'application/json'}
-        req = urllib2.Request(options.wai_addr + '/wai/v1/hostIds', headers=headers)
+        headers = {'Content-Type': 'application/json',
+                   'registerToken': options.wai_token}
+        req = urllib2.Request(options.wai_addr + '/wai/v1/hostIds/register', headers=headers)
 
         data = {'hostname': getHostName(),
                 'macIPAddressPairs': getMacIpList()}
@@ -80,7 +81,21 @@ def net_if_addrs():
 
         keep = True
         for line in info_lines:
+
             line = line.strip()
+
+            if line.find('docker') > -1:
+                keep = False
+                break
+
+            if line.find('cilium') > -1:
+                keep = False
+                break
+
+            if line.find('nodelocaldns') > -1:
+                keep = False
+                break
+
             if line.startswith('link/'):
                 vals = line.split()
                 if vals[0].split('/')[1] == 'loopback' or vals[0].split('/')[1] == 'sit':
@@ -88,11 +103,12 @@ def net_if_addrs():
                     break
                 else:
                     nic['maddr'] = vals[1]
+
             if line.startswith('inet '):
                 vals = line.split()
                 nic['ip'] = vals[1].split('/')[0]
 
-        if keep:
+        if keep and 'maddr' in nic and 'ip' in nic:
             nic_array.append(nic)
         index += 1
 

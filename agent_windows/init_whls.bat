@@ -12,6 +12,7 @@ if exist %NSIGHT_AGENT%wheels (
     %VENV_BIN%\pip wheel --wheel-dir=%NSIGHT_AGENT%wheels psutil
     %VENV_BIN%\pip wheel --wheel-dir=%NSIGHT_AGENT%wheels ntplib
     %VENV_BIN%\pip wheel --wheel-dir=%NSIGHT_AGENT%wheels chardet
+    %VENV_BIN%\pip wheel --wheel-dir=%NSIGHT_AGENT%wheels WMI
 )
 
 exit /b

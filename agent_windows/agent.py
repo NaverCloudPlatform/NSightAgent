@@ -1,5 +1,6 @@
 import atexit
 import Queue
+import os
 
 import agent_globals
 import logger
@@ -12,7 +13,7 @@ from sender import SenderThread
 
 LOG = logger.get_logger('tcollector')
 SENDERS = []
-MSG_QUEUE = Queue.Queue()
+CONFIG_VERSION_QUEUE = Queue.Queue(128)
 
 
 def start(options):
@@ -24,11 +25,11 @@ def start(options):
     reader.start()
 
     for i in range(options.sender_thread_number):
-        sender = SenderThread(reader.readerq, MSG_QUEUE, options)
+        sender = SenderThread(reader.readerq, CONFIG_VERSION_QUEUE, options)
         sender.start()
         SENDERS.append(sender)
 
-    main_loop = ScriptsRunner(options, collector_holder, MSG_QUEUE)
+    main_loop = ScriptsRunner(options, collector_holder, CONFIG_VERSION_QUEUE)
     try:
         main_loop.start()
     except KeyboardInterrupt:
@@ -53,6 +54,11 @@ def stop():
     # agent_globals.RUN = False
 
 
+def clean_cache(options):
+    cache_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), options.cdir, 'cache'))
+    os.system('rd /s /q "%s"' % cache_dir)
+
+
 if __name__ == '__main__':
     agent_argv = []
     agent_configs = agent_config.get_configs()
@@ -60,5 +66,6 @@ if __name__ == '__main__':
         agent_argv.append(key)
         agent_argv.append(agent_configs[key])
     options, args = option_parser.parse_cmdline(agent_argv)
+    clean_cache(options)
     agent_globals.RUN = True
     start(options)

@@ -1,20 +1,56 @@
+# coding=utf-8
 import json
-import os
-import time
-
-import chardet
-import psutil
 import sys
+import win32pdh
 
-from diskcache import Cache
+from apscheduler.schedulers.blocking import BlockingScheduler
+
+sys.path.append(sys.argv[1])
+
+from collectors.libs.time_util import get_ntp_time
+
+global counter_dict
+counter_dict = {}
 
 
 def main(argv):
-    collectors_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-    cache = Cache(os.path.join(collectors_dir, 'cache/script/network'))
+    scheduler = BlockingScheduler()
 
-    dic = psutil.net_if_addrs()
-    counters = psutil.net_io_counters(pernic=True)
+    global hq
+    hq = win32pdh.OpenQuery()
+
+    counters, instances = win32pdh.EnumObjectItems(None, None, 'Network Interface', win32pdh.PERF_DETAIL_WIZARD)
+
+    instances = filter_instance(instances)
+
+    print instances
+
+    for instance in instances:
+
+        counter_dict[instance] = {}
+
+        counter_dict[instance]['snd_bps'] = win32pdh.AddCounter(hq, "\\Network Interface(%s)\\Bytes Sent/sec" % instance)
+        counter_dict[instance]['rcv_bps'] = win32pdh.AddCounter(hq, "\\Network Interface(%s)\\Bytes Received/sec" % instance)
+        counter_dict[instance]['snd_pps'] = win32pdh.AddCounter(hq, "\\Network Interface(%s)\\Packets Sent/sec" % instance)
+        counter_dict[instance]['rcv_pps'] = win32pdh.AddCounter(hq, "\\Network Interface(%s)\\Packets Received/sec" % instance)
+
+        counter_dict[instance]['snd_fail_packt_cnt'] = win32pdh.AddCounter(
+            hq, "\\Network Interface(%s)\\Packets Outbound Errors" % instance)
+        counter_dict[instance]['rcv_fail_packt_cnt'] = win32pdh.AddCounter(
+            hq, "\\Network Interface(%s)\\Packets Received Errors" % instance)
+
+    scheduler.add_job(query, 'cron', minute='*/1', second='0')
+    scheduler.start()
+
+    win32pdh.CloseQuery(hq)
+
+
+def query():
+    global hq
+    # global counter_handle
+    global counter_dict
+
+    win32pdh.CollectQueryData(hq)
 
     out_list = []
 
@@ -29,105 +65,151 @@ def main(argv):
     avg_snd_fail_packt_cnt = 0.0
     avg_rcv_fail_packt_cnt = 0.0
 
-    nic_count = 0
+    # nic_count = 0
 
-    for name in dic:
-        snic_list = dic[name]
-        mac = None
-        ipv4 = None
-        for snic in snic_list:
-            if snic.family == -1:
-                mac = snic.address.replace('-', ':')
-            elif snic.family == 2:
-                ipv4 = snic.address
+    count_snd_bps = 0
+    count_rcv_bps = 0
+    count_snd_pps = 0
+    count_rcv_pps = 0
+    count_snd_fail = 0
+    count_rcv_fail = 0
 
-        if mac is None or ipv4 is None or mac == '00:00:00:00:00:00':
-            continue
+    ntp_checked, timestamp = get_ntp_time()
 
-        nic_count += 1
+    for instance in counter_dict:
 
-        dimensions = {'nic_desc': name.decode(chardet.detect(name)['encoding']).encode('utf-8'),
-                      'nic_ip': ipv4,
-                      'macaddr': mac}
+        dimensions = {'nic_desc': instance}
         metrics = {}
-        timestamp = int(time.time() * 1000)
 
-        snetio = counters[name]
+        # nic_count += 1
 
-        snd_bps = counter_calc_delta(cache, '%s_bytes_sent' % mac, snetio.bytes_sent) * 8
-        rcv_bps = counter_calc_delta(cache, '%s_bytes_recv' % mac, snetio.bytes_recv) * 8
-        snd_pps = counter_calc_delta(cache, '%s_packets_sent' % mac, snetio.packets_sent)
-        rcv_pps = counter_calc_delta(cache, '%s_packets_recv' % mac, snetio.packets_recv)
-        snd_fail_packt_cnt = counter_calc_delta(cache, '%s_errout' % mac, snetio.errout)
-        rcv_fail_packt_cnt = counter_calc_delta(cache, '%s_errin' % mac, snetio.errin)
-
-        if snd_bps is not None:
-            metrics['snd_bps'] = snd_bps / 60.0
+        try:
+            _, snd_bps = win32pdh.GetFormattedCounterValue(counter_dict[instance]['snd_bps'],
+                                                                win32pdh.PDH_FMT_LONG)
+            metrics['snd_bps'] = snd_bps * 8
             avg_snd_bps += metrics['snd_bps']
             if metrics['snd_bps'] > max_snd_bps:
                 max_snd_bps = metrics['snd_bps']
-        if rcv_bps is not None:
-            metrics['rcv_bps'] = rcv_bps / 60.0
+            count_snd_bps += 1
+        except Exception as e:
+            print('error: %s' % e)
+            pass
+
+        try:
+            _, rcv_bps = win32pdh.GetFormattedCounterValue(counter_dict[instance]['rcv_bps'],
+                                                                 win32pdh.PDH_FMT_LONG)
+            metrics['rcv_bps'] = rcv_bps * 8
             avg_rcv_bps += metrics['rcv_bps']
             if metrics['rcv_bps'] > max_rcv_bps:
                 max_rcv_bps = metrics['rcv_bps']
-        if snd_pps is not None:
-            metrics['snd_pps'] = snd_pps / 60.0
+            count_rcv_bps += 1
+        except Exception as e:
+            pass
+
+        try:
+            _, snd_pps = win32pdh.GetFormattedCounterValue(counter_dict[instance]['snd_pps'], win32pdh.PDH_FMT_LONG)
+            metrics['snd_pps'] = snd_pps
             avg_snd_pps += metrics['snd_pps']
             if metrics['snd_pps'] > max_snd_pps:
                 max_snd_pps = metrics['snd_pps']
-        if rcv_pps is not None:
-            metrics['rcv_pps'] = rcv_pps / 60.0
+            count_snd_pps += 1
+        except Exception as e:
+            pass
+
+        try:
+            _, rcv_pps = win32pdh.GetFormattedCounterValue(counter_dict[instance]['rcv_pps'], win32pdh.PDH_FMT_LONG)
+            metrics['rcv_pps'] = rcv_pps
             avg_rcv_pps += metrics['rcv_pps']
             if metrics['rcv_pps'] > max_rcv_pps:
                 max_rcv_pps = metrics['rcv_pps']
-        if snd_fail_packt_cnt is not None:
+            count_rcv_pps += 1
+        except Exception as e:
+            pass
+
+        try:
+            _, snd_fail_packt_cnt = win32pdh.GetFormattedCounterValue(counter_dict[instance]['snd_fail_packt_cnt'], win32pdh.PDH_FMT_LONG)
             metrics['snd_fail_packt_cnt'] = snd_fail_packt_cnt
             avg_snd_fail_packt_cnt += snd_fail_packt_cnt
-        if rcv_fail_packt_cnt is not None:
+            count_snd_fail += 1
+        except Exception as e:
+            pass
+
+        try:
+            _, rcv_fail_packt_cnt = win32pdh.GetFormattedCounterValue(counter_dict[instance]['rcv_fail_packt_cnt'], win32pdh.PDH_FMT_LONG)
             metrics['rcv_fail_packt_cnt'] = rcv_fail_packt_cnt
             avg_rcv_fail_packt_cnt += rcv_fail_packt_cnt
+            count_rcv_fail += 1
+        except Exception as e:
+            pass
 
         if metrics:
             out = {'dimensions': dimensions,
                    'metrics': metrics,
-                   'timestamp': timestamp}
+                   'timestamp': timestamp,
+                   'ntp_checked': ntp_checked}
             out_list.append(out)
 
     metrics = {}
-    metrics['avg_snd_bps'] = avg_snd_bps / nic_count
-    metrics['max_snd_bps'] = max_snd_bps
-    metrics['avg_rcv_bps'] = avg_rcv_bps / nic_count
-    metrics['max_rcv_bps'] = max_rcv_bps
-    metrics['avg_snd_pps'] = avg_snd_pps / nic_count
-    metrics['max_snd_pps'] = max_snd_pps
-    metrics['avg_rcv_pps'] = avg_rcv_pps / nic_count
-    metrics['max_rcv_pps'] = max_rcv_pps
-    metrics['avg_snd_fail_packt_cnt'] = avg_snd_fail_packt_cnt / nic_count
-    metrics['avg_rcv_fail_packt_cnt'] = avg_rcv_fail_packt_cnt / nic_count
+    if count_snd_bps > 0:
+        metrics['avg_snd_bps'] = avg_snd_bps
+        metrics['max_snd_bps'] = max_snd_bps
+    if count_rcv_bps > 0:
+        metrics['avg_rcv_bps'] = avg_rcv_bps
+        metrics['max_rcv_bps'] = max_rcv_bps
+    if count_snd_pps > 0:
+        metrics['avg_snd_pps'] = avg_snd_pps
+        metrics['max_snd_pps'] = max_snd_pps
+    if count_rcv_pps > 0:
+        metrics['avg_rcv_pps'] = avg_rcv_pps
+        metrics['max_rcv_pps'] = max_rcv_pps
+    if count_snd_fail:
+        metrics['avg_snd_fail_packt_cnt'] = avg_snd_fail_packt_cnt
+    if count_rcv_fail:
+        metrics['avg_rcv_fail_packt_cnt'] = avg_rcv_fail_packt_cnt
 
-    out = {'dimensions': {'schema_type': 'svr'},
-           'metrics': metrics,
-           'timestamp': int(time.time() * 1000)}
-    out_list.append(out)
+    if metrics:
+        out = {'dimensions': {'schema_type': 'svr'},
+               'metrics': metrics,
+               'timestamp': timestamp,
+               'ntp_checked': ntp_checked}
+        out_list.append(out)
 
-    print(json.dumps(out_list))
-    sys.stdout.flush()
+    # if nic_count > 0:
+    #     metrics = {}
+    #
+    #     metrics['avg_snd_bps'] = avg_snd_bps
+    #     metrics['max_snd_bps'] = max_snd_bps
+    #     metrics['avg_rcv_bps'] = avg_rcv_bps
+    #     metrics['max_rcv_bps'] = max_rcv_bps
+    #     metrics['avg_snd_pps'] = avg_snd_pps
+    #     metrics['max_snd_pps'] = max_snd_pps
+    #     metrics['avg_rcv_pps'] = avg_rcv_pps
+    #     metrics['max_rcv_pps'] = max_rcv_pps
+    #     metrics['avg_snd_fail_packt_cnt'] = avg_snd_fail_packt_cnt
+    #     metrics['avg_rcv_fail_packt_cnt'] = avg_rcv_fail_packt_cnt
 
-    cache.close()
+    if out_list:
+        print(json.dumps(out_list))
+        sys.stdout.flush()
 
 
-def counter_calc_delta(cache, key, value):
-    last_value = cache.get(key)
-    cache.set(key, value)
-    if last_value is None:
-        return None
-    delta = value - last_value
-    if delta < 0 or delta > last_value:
-        return None
-    return delta
+def filter_instance(instances):
+    target = []
+
+    for name in instances:
+        nic_desc = name.encode(encoding='utf-8')
+
+        if nic_desc.find('isatap') > -1 \
+                or nic_desc.find('Tunneling') > -1 \
+                or nic_desc.find('Miniport') > -1 \
+                or nic_desc.find('本地连接') > -1 \
+                or nic_desc.find('로컬 영역 연결') > -1:
+            continue
+
+        target.append(nic_desc.decode(encoding='utf-8'))
+
+    return target
 
 
-if __name__ == "__main__":
-    sys.stdin.close()
+if __name__ == '__main__':
     sys.exit(main(sys.argv))

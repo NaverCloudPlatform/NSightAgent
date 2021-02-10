@@ -12,15 +12,15 @@ from collector import Collector, kill
 LOG = logger.get_logger('scripts_runner')
 RECYCLE_QUEUE = Queue.Queue()
 PERIOD = 5
-MODIFIED_LIST = []
+SCRIPT_CONFIG_VERSIONS = {}
 
 
 class ScriptsRunner:
 
-    def __init__(self, options, collectors_holder, queue):
+    def __init__(self, options, collectors_holder, version_queue):
         self.options = options
         self.collectors_holder = collectors_holder
-        self.msg_queue = queue
+        self.version_queue = version_queue
 
         self.scheduler = BlockingScheduler()
         self.GENERATION = 0
@@ -29,8 +29,8 @@ class ScriptsRunner:
         recycle_thread.start()
 
     def start(self):
-        self.scheduler.add_job(self.prepare, 'cron', second='20')
-        self.scheduler.add_job(self.spawn_children, 'cron', second='0')
+        self.scheduler.add_job(self.prepare, 'cron', minute='*/1', second='20', max_instances=1)
+        self.scheduler.add_job(self.spawn_children, 'cron', minute='*/1', second='0', max_instances=1)
         self.scheduler.start()
 
     def stop(self):
@@ -38,9 +38,8 @@ class ScriptsRunner:
 
     def prepare(self):
         if agent_globals.RUN:
-            self.update_scripts()
+            self.update_config_version()
             self.load_scripts(self.options.cdir)
-            self.load_configs(self.options.cdir)
             LOG.debug('populated collectors: %s' % str(self.collectors_holder.collectors_dict()))
             self.check_stop_start()
             self.stop_children()
@@ -56,6 +55,9 @@ class ScriptsRunner:
                         continue
 
                     script = '%s/%d/%s' % (coldir, interval, colname)
+
+                    if os.path.isdir(script):
+                        continue
 
                     if os.path.isfile(script) and os.access(script, os.X_OK):
                         version = parse_version(script)
@@ -89,7 +91,6 @@ class ScriptsRunner:
                                 LOG.info('%s has been updated on disk', collector.name)
                                 collector.mtime = mtime
                                 collector.modified = True
-
                                 collector.disable = False
                         else:
                             LOG.debug('************** populating collector %s register' % colname)
@@ -113,18 +114,13 @@ class ScriptsRunner:
         for name in to_delete:
             self.collectors_holder.del_collector(name)
 
-    def load_configs(self, coldir):
-        if not agent_globals.RUN:
-            return
-
-        for collector in self.collectors_holder.all_collectors():
-            config_path = os.path.join(coldir, 'script_configs', collector.name[0:collector.name.find('.')], 'config.py')
-            if os.path.isfile(config_path):
-                config_version = parse_config_version(config_path)
-                if collector.config_version != config_version:
-                    collector.config_version = config_version
-                    collector.modified = True
-                    collector.disable = False
+    def update_config_version(self):
+        while not self.version_queue.empty():
+            version_info = self.version_queue.get()
+            for key in version_info:
+                version = version_info[key]
+                if key not in SCRIPT_CONFIG_VERSIONS or SCRIPT_CONFIG_VERSIONS[key] != version:
+                    SCRIPT_CONFIG_VERSIONS[key] = version
 
     def update_scripts(self):
         while not self.msg_queue.empty():
@@ -154,23 +150,11 @@ class ScriptsRunner:
                     col.need_start = True
 
     def check_disable(self):
-        now = int(time.time())
-
         for col in self.collectors_holder.all_living_collectors():
             status = col.process.poll()
             if status is None:
                 continue
             col.process = None
-
-            if status == 13:
-                LOG.info('removing %s from the list of collectors (by request)',
-                         col.name)
-                # col.disable = True
-            elif status != 0:
-                LOG.warning('collector %s terminated after %d seconds with '
-                            'status code %d',
-                            col.name, now - col.last_spawn, status)
-                # col.disable = True
 
     def stop_children(self):
         LOG.debug('stop_children')
@@ -189,7 +173,11 @@ class ScriptsRunner:
 
         for col in self.collectors_holder.all_valid_collectors():
             if col.process is None and col.need_start:
-                col.startup()
+                key = col.name[0:col.name.index('.')]
+                if key in SCRIPT_CONFIG_VERSIONS:
+                    col.startup(SCRIPT_CONFIG_VERSIONS[key])
+                else:
+                    col.startup()
 
         # for col in all_valid_collectors():
         #     now = int(time.time())
@@ -229,17 +217,19 @@ class ScriptsRunner:
 
 
 def parse_version(script):
-    f = open(script, "r")
-    line = f.readline().replace('\n', ''.replace('\r', ''))
-    f.close()
-    return line[1:]
+    # f = open(script, "r")
+    # line = f.readline().replace('\n', ''.replace('\r', ''))
+    # f.close()
+    # return line[1:]
+    return '-1'
 
 
-def parse_config_version(config):
-    f = open(config, "r")
-    line = f.readline().replace('\n', ''.replace('\r', ''))
-    f.close()
-    return line[1:]
+# def parse_config_version(config):
+#     # f = open(config, "r")
+#     # line = f.readline().replace('\n', ''.replace('\r', ''))
+#     # f.close()
+#     # return line[1:]
+#     return '-1'
 
 
 class RecycleThread(threading.Thread):
@@ -260,14 +250,18 @@ class RecycleThread(threading.Thread):
                 if process is None:
                     continue
                 try:
-                    status = process.poll()
-                    if status is None:
+                    terminated = False
+                    for attempt in range(5):
+                        if process.poll() is not None:
+                            terminated = True
+                            break
+                        LOG.info('Waiting %ds for PID %d to exit...'
+                                 % (5 - attempt, process.pid))
+                        time.sleep(1)
+                    if not terminated:
                         kill(process.pid)
-                        process.wait()
-                        if process.poll() is None:
-                            self.queue.put(process)
-                    else:
-                        print('process[%i] exit status: %d' % (process.pid, status))
+                        self.queue.put(process)
+                        # process.wait()
                 except Exception as e:
                     LOG.exception('ignoring uncaught exception while shutting down: %s', e)
                     self.queue.put(process)

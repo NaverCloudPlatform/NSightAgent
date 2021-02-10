@@ -29,8 +29,9 @@ def get_host_id(options=None):
 
     now = time.time()
     if now - REFRESH_TIME > 10 * 60 or not HOST_ID:
-        headers = {'Content-Type': 'application/json'}
-        req = urllib2.Request(options.wai_addr + '/wai/v1/hostIds', headers=headers)
+        headers = {'Content-Type': 'application/json',
+                   'registerToken': options.wai_token}
+        req = urllib2.Request(options.wai_addr + '/wai/v1/hostIds/register', headers=headers)
         # req = urllib2.Request('http://10.113.103.203:10280' + '/wai/v1/hostIds', headers=headers)
 
         # data = {'hostname': getHostName(),

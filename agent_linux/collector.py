@@ -14,6 +14,7 @@
 import os
 import signal
 import subprocess
+import sys
 import time
 
 import fcntl
@@ -21,6 +22,7 @@ import fcntl
 import logger
 
 # import fcntl
+import wai
 
 LOG = logger.get_logger('collector')
 
@@ -37,6 +39,7 @@ class Collector(object):
         self.recycle_queue = recycle_queue
         self.generation = 0
         self.process = None
+        self.finish = False
         self.last_spawn = last_spawn
         # self.nextkill = 0
         # self.killstate = 0
@@ -112,13 +115,24 @@ class Collector(object):
             while len(self.datalines):
                 yield self.datalines.pop(0)
 
-    def startup(self):
+    def startup(self, config_version=None):
         LOG.debug('starting up %s (interval=%d)', self.name, self.interval)
 
         try:
             py = os.path.join(self.options.basedir, '.venv', 'bin', 'python')
-            self.process = subprocess.Popen([py, self.script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True,
-                                            preexec_fn=os.setsid)
+            if config_version is not None:
+                host_id = wai.get_host_id(self.options)
+                self.process = subprocess.Popen([py, self.script, sys.path[0], str(config_version), host_id],
+                                                stdout=subprocess.PIPE,
+                                                stderr=subprocess.PIPE,
+                                                close_fds=True,
+                                                preexec_fn=os.setsid)
+            else:
+                self.process = subprocess.Popen([py, self.script, sys.path[0]],
+                                                stdout=subprocess.PIPE,
+                                                stderr=subprocess.PIPE,
+                                                close_fds=True,
+                                                preexec_fn=os.setsid)
             # print("--- script:%s" % self.script)
             # self.process = subprocess.Popen('python %s' % self.script, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             if self.process.pid <= 0:
