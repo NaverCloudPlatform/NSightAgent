@@ -1,16 +1,15 @@
-#v0
 import json
-import os
 import sys
-import time
 
-from diskcache import Cache
+sys.path.append(sys.argv[1])
+
+from collectors.libs import time_util
+from collectors.libs.cache import CacheProxy
 
 
 def main(argv):
 
-    collectors_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-    cache = Cache(os.path.join(collectors_dir, 'cache/script/memory'))
+    cache = CacheProxy('memory')
 
     f_mem_info = open('/proc/meminfo')
 
@@ -50,24 +49,25 @@ def main(argv):
     for line in f_vmstat:
         values = line.split(None)
         if values[0] == 'pgpgin':
-            pgin_mb = counter_calc_delta(cache, 'pgin', long(values[1]))
+            pgin_mb = cache.counter_to_gauge('pgin', long(values[1]))
         if values[0] == 'pgpgout':
-            pgout_mb = counter_calc_delta(cache, 'pgout', long(values[1]))
+            pgout_mb = cache.counter_to_gauge('pgout', long(values[1]))
         if values[0] == 'pgfault':
-            pgfault = counter_calc_delta(cache, 'pgfault', long(values[1]))
+            pgfault = cache.counter_to_gauge('pgfault', long(values[1]))
 
     f_vmstat.close()
     cache.close()
 
     dimensions = {}
     metrics = {}
-    timestamp = int(time.time() * 1000)
+    ntp_checked, timestamp = time_util.get_ntp_time()
 
     metrics['mem_mb'] = mem_mb
     metrics['free_mem_mb'] = free_mem_mb
     metrics['used_mem_mb'] = used_mem_mb
     metrics['mem_usert'] = mem_usert
-    metrics['shared_mem_mb'] = shared_mem_mb
+    if 'shared_mem_mb' in vars():
+        metrics['shared_mem_mb'] = shared_mem_mb
     metrics['bffr_mb'] = bffr_mb
     metrics['cache_mb'] = cache_mb
     metrics['swap_mb'] = swap_mb
@@ -84,7 +84,8 @@ def main(argv):
 
     out = {'dimensions': dimensions,
            'metrics': metrics,
-           'timestamp': timestamp}
+           'timestamp': timestamp,
+           'ntp_checked': ntp_checked}
     out_list = [out]
     print(json.dumps(out_list))
     sys.stdout.flush()

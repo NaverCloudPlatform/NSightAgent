@@ -8,13 +8,8 @@ CONTROLLER_HOME=$AGENT_ROOT/../..
 PYTHON_HOME=$CONTROLLER_HOME/agent_python
 
 install_agent() {
-  $PYTHON_HOME/bin/python ${VIRTUALENV_DIR}/virtualenv.py -p $PYTHON_HOME/bin/python2.7 $AGENT_ROOT/.venv
+  $PYTHON_HOME/bin/python ${VIRTUALENV_DIR}/virtualenv.py --no-download -p $PYTHON_HOME/bin/python2.7 $AGENT_ROOT/.venv
   ${VENV_BIN}/pip install --no-index --find-links=${WHEELS_DIR} APScheduler diskcache ntplib
-  if [ $? -ne 0 ]
-  then
-    echo "install wheels failure"
-    return
-  fi
 
   echo "NSight-Agent installed"
 }

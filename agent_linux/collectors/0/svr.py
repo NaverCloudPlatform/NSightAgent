@@ -6,35 +6,50 @@ import time
 
 import ntplib
 
+sys.path.append(sys.argv[1])
+
+from collectors.configs.script_config import get_configs
+
 
 def main(argv):
-    config_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'script_configs'))
-    config_file_path = os.path.join(config_dir, 'svr_config.cfg')
+    config = get_configs()
 
-    cp = ConfigParser.ConfigParser()
-    cp.read(config_file_path)
-
-    ntp_host = cp.get('ntp', 'ntp_host')
-    agent_version = cp.get('agent', 'agent_version')
+    ntp_host = config.get('ntp', 'ntp_host')
+    agent_version = config.get('agent', 'agent_version')
 
     dimensions = {}
     metrics = {}
-    timestamp = int(time.time() * 1000)
 
-    metrics['boot_time'] = int(boot_time())
+    metrics['boot_time'] = long(boot_time())
 
-    client = ntplib.NTPClient()
-    response = client.request(ntp_host)
-    deviation = int(time.time() * 1000) - int(response.tx_time * 1000)
-    metrics['time_deviation'] = deviation
+    timestamp = long(time.time() * 1000)
+    ntp_checked = True
+
+    try:
+        client = ntplib.NTPClient()
+        response = client.request(ntp_host)
+        timestamp = long(response.tx_time * 1000)
+        deviation = long(time.time() * 1000) - timestamp
+        metrics['time_deviation'] = deviation
+    except Exception:
+        ntp_checked = False
 
     metrics['user_cnt'] = user_cnt()
+
+    load_array = load_averages()
+    load_average_1m = float(load_array[0])
+    load_average_5m = float(load_array[1])
+    load_average_15m = float(load_array[2])
+    metrics['load_average_1m'] = load_average_1m
+    metrics['load_average_5m'] = load_average_5m
+    metrics['load_average_15m'] = load_average_15m
 
     metrics['agent_version'] = agent_version
 
     out = {'dimensions': dimensions,
            'metrics': metrics,
-           'timestamp': timestamp}
+           'timestamp': timestamp,
+           'ntp_checked': ntp_checked}
     out_list = [out]
     print(json.dumps(out_list))
     sys.stdout.flush()
@@ -46,6 +61,14 @@ def boot_time():
             if line.startswith('btime'):
                 ret = float(line.strip().split()[1])
                 return ret
+
+
+def load_averages():
+    result = os.popen("uptime").read()
+    key = 'load average:'
+    index = result.find(key) + len(key)
+    array = result[index:].strip().split(',')
+    return array
 
 
 def user_cnt():

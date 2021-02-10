@@ -22,6 +22,7 @@ def parse_cmdline(argv):
         'pcollector_addr': '127.0.0.1:8080',
         'fea_addr': '127.0.0.1:8080',
         'wai_addr': '127.0.0.1:8080',
+        'wai_token': '',
 
         'evictinterval': 6000,
         'dedupinterval': 0,
@@ -33,6 +34,7 @@ def parse_cmdline(argv):
 
         'sender_thread_number': 1,
         'send_package_wait': 5000,
+        'not_work_threshold': 3600,
 
         'api_gw_url': '',
         'api_gw_key': '',
@@ -57,6 +59,9 @@ def parse_cmdline(argv):
     parser.add_option('--wai-addr', dest='wai_addr', type='str',
                       default=defaults['wai_addr'],
                       help='WAI server address.')
+    parser.add_option('--wai-token', dest='wai_token', type='str',
+                      default=defaults['wai_token'],
+                      help='WAI register token.')
 
     # deduplicate
     parser.add_option('--dedup-interval', dest='dedupinterval', type='int',
@@ -92,6 +97,8 @@ def parse_cmdline(argv):
                       default=defaults['sender_thread_number'], help='Thread number of sender.')
     parser.add_option('--send-package-wait', dest='send_package_wait', type='int',
                       default=defaults['send_package_wait'], help='waiting time for sender package')
+    parser.add_option('--not-work-threshold', dest='not_work_threshold', type='int',
+                      default=defaults['not_work_threshold'], help='threshold to determine whether agent is working')
 
     # CW add
     parser.add_option('-U', '--api-gw-url', dest='api_gw_url', type='str',

@@ -1,9 +1,12 @@
 import json
 import sys
-import time
 import win32pdh
 
 from apscheduler.schedulers.blocking import BlockingScheduler
+
+sys.path.append(sys.argv[1])
+
+from collectors.libs.time_util import get_ntp_time
 
 global counter_dict
 counter_dict = {}
@@ -11,8 +14,6 @@ counter_dict = {}
 
 def main(argv):
     scheduler = BlockingScheduler()
-
-    # print_counter_info('PhysicalDisk')
 
     global hq
     hq = win32pdh.OpenQuery()
@@ -51,7 +52,6 @@ def main(argv):
 
 def query():
     global hq
-    # global counter_handle
     global counter_dict
 
     win32pdh.CollectQueryData(hq)
@@ -67,13 +67,19 @@ def query():
     max_read = 0
     max_write = 0
 
-    disk_count = len(counter_dict)
+    # disk_count = len(counter_dict)
+
+    count_read_byt = 0
+    count_write_byt = 0
+    count_read = 0
+    count_write = 0
+
+    ntp_checked, timestamp = get_ntp_time()
 
     for instance in counter_dict:
 
         dimensions = {'disk_idx': instance}
         metrics = {}
-        timestamp = int(time.time() * 1000)
 
         try:
             _, read_byt_cnt = win32pdh.GetFormattedCounterValue(counter_dict[instance]['read_byt_cnt'],
@@ -82,6 +88,7 @@ def query():
             avg_read_byt += read_byt_cnt
             if read_byt_cnt > max_read_byt:
                 max_read_byt = read_byt_cnt
+            count_read_byt += 1
         except Exception as e:
             pass
 
@@ -92,6 +99,7 @@ def query():
             avg_write_byt += write_byt_cnt
             if write_byt_cnt > max_write_byt:
                 max_write_byt = write_byt_cnt
+            count_write_byt += 1
         except Exception as e:
             pass
 
@@ -101,6 +109,7 @@ def query():
             avg_read += read_cnt
             if read_cnt > max_read:
                 max_read = read_cnt
+            count_read += 1
         except Exception as e:
             pass
 
@@ -110,6 +119,7 @@ def query():
             avg_write += write_cnt
             if write_cnt > max_write:
                 max_write = write_cnt
+            count_write += 1
         except Exception as e:
             pass
 
@@ -150,34 +160,45 @@ def query():
         if metrics:
             out = {'dimensions': dimensions,
                    'metrics': metrics,
-                   'timestamp': timestamp}
+                   'timestamp': timestamp,
+                   'ntp_checked': ntp_checked}
             out_list.append(out)
 
-    if disk_count > 0:
-        metrics = {}
-
-        metrics['avg_read_byt_cnt'] = avg_read_byt / disk_count
-        metrics['avg_write_byt_cnt'] = avg_write_byt / disk_count
-        metrics['avg_read_cnt'] = avg_read / disk_count
-        metrics['avg_write_cnt'] = avg_write / disk_count
+    metrics = {}
+    if count_read_byt > 0:
+        metrics['avg_read_byt_cnt'] = avg_read_byt / count_read_byt
         metrics['max_read_byt_cnt'] = max_read_byt
+    if count_write_byt > 0:
+        metrics['avg_write_byt_cnt'] = avg_write_byt / count_write_byt
         metrics['max_write_byt_cnt'] = max_write_byt
+    if count_read > 0:
+        metrics['avg_read_cnt'] = avg_read / count_read
         metrics['max_read_cnt'] = max_read
+    if count_write > 0:
+        metrics['avg_write_cnt'] = avg_write / count_write
         metrics['max_write_cnt'] = max_write
 
+    # if disk_count > 0:
+    #     metrics = {}
+    #
+    #     metrics['avg_read_byt_cnt'] = avg_read_byt / disk_count
+    #     metrics['avg_write_byt_cnt'] = avg_write_byt / disk_count
+    #     metrics['avg_read_cnt'] = avg_read / disk_count
+    #     metrics['avg_write_cnt'] = avg_write / disk_count
+    #     metrics['max_read_byt_cnt'] = max_read_byt
+    #     metrics['max_write_byt_cnt'] = max_write_byt
+    #     metrics['max_read_cnt'] = max_read
+    #     metrics['max_write_cnt'] = max_write
+
+    if metrics:
         out = {'dimensions': {'schema_type': 'svr'},
                'metrics': metrics,
-               'timestamp': int(time.time() * 1000)}
+               'timestamp': timestamp,
+               'ntp_checked': ntp_checked}
         out_list.append(out)
 
     print(json.dumps(out_list))
     sys.stdout.flush()
-
-
-def print_counter_info(counter_object):
-    counters, instances = win32pdh.EnumObjectItems(None, None, counter_object, win32pdh.PERF_DETAIL_WIZARD)
-    print counters
-    print instances
 
 
 if __name__ == '__main__':

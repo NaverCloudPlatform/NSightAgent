@@ -1,14 +1,29 @@
 import json
-import time
+import sys
 import win32api
+import win32pdh
 
 import psutil
-import sys
+
+sys.path.append(sys.argv[1])
+
+from collectors.libs.time_util import get_ntp_time
 
 
 def main(argv):
+    lpmap = {}
+    counters, instances = win32pdh.EnumObjectItems(None, None, 'PhysicalDisk', win32pdh.PERF_DETAIL_WIZARD)
+    for instance in instances:
+        instance = instance.encode('utf-8')
+        if instance != '_Total':
+            plist = instance.split()
+            if len(plist) > 1:
+                p_id = plist[0]
+                llist = plist[1:]
+                for l in llist:
+                    lpmap[l + '\\'] = 'Disk %s :' % p_id
+
     partitions = psutil.disk_partitions()
-    # print(partitions)
 
     out_list = []
 
@@ -17,15 +32,17 @@ def main(argv):
     fs_free_mb = 0.0
     max_fs_usert = 0.0
 
+    ntp_checked, timestamp = get_ntp_time()
+
     for sdiskpart in partitions:
 
         if not sdiskpart.fstype or sdiskpart.fstype == 'CDFS':
             continue
 
-        dimensions = {'dev_nm': sdiskpart.device,
+        dimensions = {'dev_nm': lpmap[sdiskpart.device],
                       'mnt_nm': sdiskpart.mountpoint,
                       'fs_type_nm': sdiskpart.fstype,
-                      'mnt_stat_cd': 'MONTGTSTAT_RUN'}
+                      'mnt_stat_cd': 1}
 
         sys_value = win32api.GetDiskFreeSpaceEx(sdiskpart.mountpoint)
 
@@ -34,7 +51,6 @@ def main(argv):
         used_byt_cnt = all_byt_cnt - free_byt_cnt
         fs_usert = used_byt_cnt * 100.0 / all_byt_cnt
 
-        timestamp = int(time.time() * 1000)
         metrics = {'all_byt_cnt': all_byt_cnt / 1024 / 1024.0,
                    'used_byt_cnt': used_byt_cnt / 1024 / 1024.0,
                    'free_byt_cnt': free_byt_cnt / 1024 / 1024.0,
@@ -48,7 +64,8 @@ def main(argv):
 
         out = {'dimensions': dimensions,
                'metrics': metrics,
-               'timestamp': timestamp}
+               'timestamp': timestamp,
+               'ntp_checked': ntp_checked}
         out_list.append(out)
 
     metrics = {}
@@ -60,11 +77,29 @@ def main(argv):
 
     out = {'dimensions': {'schema_type': 'svr'},
            'metrics': metrics,
-           'timestamp': int(time.time() * 1000)}
+           'timestamp': timestamp,
+           'ntp_checked': ntp_checked}
     out_list.append(out)
 
     print(json.dumps(out_list))
     sys.stdout.flush()
+
+
+# def get_ntp_time():
+#     try:
+#         config_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'script_configs'))
+#         config_file_path = os.path.join(config_dir, 'svr_config.cfg')
+#
+#         cp = ConfigParser.ConfigParser()
+#         cp.read(config_file_path)
+#
+#         ntp_host = cp.get('ntp', 'ntp_host')
+#
+#         client = ntplib.NTPClient()
+#         response = client.request(ntp_host)
+#         return True, int(response.tx_time * 1000)
+#     except Exception as e:
+#         return False, int(time.time() * 1000)
 
 
 if __name__ == '__main__':
